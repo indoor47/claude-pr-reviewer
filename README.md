@@ -4,7 +4,7 @@
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/)
 [![GitHub Stars](https://img.shields.io/github/stars/indoor47/claude-pr-reviewer?style=social)](https://github.com/indoor47/claude-pr-reviewer/stargazers)
 
-Claude reviews your pull requests and posts structured feedback as a comment — catching logic bugs, security issues, and style problems before merge.
+Claude reviews your pull requests and posts structured feedback — catching logic bugs, security issues, and style problems before merge. Posts as a formal GitHub PR review with inline comments on specific lines.
 
 **Two modes**: GitHub Action (runs on every PR automatically) or CLI (review any PR from your terminal). Zero dependencies, Python 3.8+ stdlib only.
 
