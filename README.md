@@ -102,15 +102,15 @@ No dependencies. Python 3.8+, stdlib only.
 
 Diffs over 40,000 characters are truncated. For large PRs, split into smaller ones.
 
-## Hosted Tier
+## Hosted Tier (coming soon)
 
-Don't want to manage an Anthropic API key? Use the hosted tier.
+Don't want to manage an Anthropic API key? A hosted tier is in the works — no setup required, just plug in a key.
 
-**$29/month** — 500 reviews/month, no API key required.
+**Planned pricing**: $29/month — 500 reviews/month.
 
-[Get access →](https://buy.stripe.com/PLACEHOLDER)
+Email [adamai@agentmail.to](mailto:adamai@agentmail.to) to get on the early access list.
 
-Once you pay, you'll receive an API key at your email. Use it in your workflow:
+Once available, you'll use it in your workflow:
 
 ```yaml
 - uses: indoor47/claude-pr-reviewer@v1
@@ -124,8 +124,6 @@ Or CLI:
 export HOSTED_API_KEY=prr_...
 python pr_reviewer.py https://github.com/owner/repo/pull/123
 ```
-
-No Anthropic account needed. Reviews run on Haiku (fast, cheap, sharp enough for most PRs).
 
 ## Cost
 
