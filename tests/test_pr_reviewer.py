@@ -1,0 +1,309 @@
+#!/usr/bin/env python3
+"""Unit tests for claude-pr-reviewer core logic.
+
+Tests cover pure functions that don't require network access or API keys.
+Run: python -m pytest tests/ -v
+  or: python -m unittest discover tests/
+"""
+
+import sys
+import os
+import unittest
+
+# Allow importing from parent directory
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import pr_reviewer
+
+
+# ---------------------------------------------------------------------------
+# _parse_license
+# ---------------------------------------------------------------------------
+
+class TestParseLicense(unittest.TestCase):
+    def test_valid(self):
+        result = pr_reviewer._parse_license("user@example.com:550e8400-e29b-41d4-a716-446655440000")
+        self.assertEqual(result, ("user@example.com", "550e8400-e29b-41d4-a716-446655440000"))
+
+    def test_valid_with_whitespace(self):
+        result = pr_reviewer._parse_license("  user@example.com:550e8400-e29b-41d4-a716-446655440000  ")
+        self.assertIsNotNone(result)
+
+    def test_missing_colon(self):
+        self.assertIsNone(pr_reviewer._parse_license("user@example.com550e8400"))
+
+    def test_bad_email_no_at(self):
+        self.assertIsNone(pr_reviewer._parse_license("notanemail:550e8400-e29b-41d4-a716-446655440000"))
+
+    def test_bad_email_no_tld(self):
+        self.assertIsNone(pr_reviewer._parse_license("user@nodot:550e8400-e29b-41d4-a716-446655440000"))
+
+    def test_bad_uuid(self):
+        self.assertIsNone(pr_reviewer._parse_license("user@example.com:not-a-uuid"))
+
+    def test_empty(self):
+        self.assertIsNone(pr_reviewer._parse_license(""))
+
+    def test_uuid_case_insensitive(self):
+        result = pr_reviewer._parse_license("user@example.com:550E8400-E29B-41D4-A716-446655440000")
+        self.assertIsNotNone(result)
+
+
+# ---------------------------------------------------------------------------
+# parse_pr_url
+# ---------------------------------------------------------------------------
+
+class TestParsePrUrl(unittest.TestCase):
+    def test_valid(self):
+        owner, repo, number = pr_reviewer.parse_pr_url("https://github.com/owner/repo/pull/42")
+        self.assertEqual(owner, "owner")
+        self.assertEqual(repo, "repo")
+        self.assertEqual(number, 42)
+
+    def test_valid_trailing_whitespace(self):
+        owner, repo, number = pr_reviewer.parse_pr_url("  https://github.com/owner/my-repo/pull/100  ")
+        self.assertEqual(owner, "owner")
+        self.assertEqual(repo, "my-repo")
+        self.assertEqual(number, 100)
+
+    def test_invalid_url_exits(self):
+        with self.assertRaises(SystemExit):
+            pr_reviewer.parse_pr_url("https://github.com/owner/repo")
+
+    def test_non_github_url_exits(self):
+        with self.assertRaises(SystemExit):
+            pr_reviewer.parse_pr_url("https://gitlab.com/owner/repo/merge_requests/1")
+
+
+# ---------------------------------------------------------------------------
+# truncate_diff
+# ---------------------------------------------------------------------------
+
+class TestTruncateDiff(unittest.TestCase):
+    def test_short_diff_unchanged(self):
+        diff = "short diff content"
+        self.assertEqual(pr_reviewer.truncate_diff(diff, max_chars=1000), diff)
+
+    def test_exactly_at_limit(self):
+        diff = "x" * 100
+        result = pr_reviewer.truncate_diff(diff, max_chars=100)
+        self.assertEqual(result, diff)
+
+    def test_truncation_adds_marker(self):
+        diff = "\n".join(["line"] * 1000)
+        result = pr_reviewer.truncate_diff(diff, max_chars=100)
+        self.assertIn("truncated", result)
+
+    def test_truncation_shorter_than_original(self):
+        diff = "\n".join(["line"] * 1000)
+        result = pr_reviewer.truncate_diff(diff, max_chars=100)
+        self.assertLess(len(result), len(diff))
+
+    def test_empty_diff(self):
+        self.assertEqual(pr_reviewer.truncate_diff("", max_chars=100), "")
+
+
+# ---------------------------------------------------------------------------
+# filter_diff
+# ---------------------------------------------------------------------------
+
+class TestFilterDiff(unittest.TestCase):
+    SAMPLE_DIFF = (
+        "diff --git a/src/main.py b/src/main.py\n"
+        "--- a/src/main.py\n"
+        "+++ b/src/main.py\n"
+        "@@ -1,3 +1,4 @@\n"
+        " existing\n"
+        "+new line\n"
+        "diff --git a/package-lock.json b/package-lock.json\n"
+        "--- a/package-lock.json\n"
+        "+++ b/package-lock.json\n"
+        "@@ -1 +1 @@\n"
+        "+{}\n"
+        "diff --git a/README.md b/README.md\n"
+        "--- a/README.md\n"
+        "+++ b/README.md\n"
+        "@@ -1 +1 @@\n"
+        "+# Title\n"
+    )
+
+    def test_no_patterns(self):
+        result = pr_reviewer.filter_diff(self.SAMPLE_DIFF, [])
+        self.assertEqual(result, self.SAMPLE_DIFF)
+
+    def test_filter_lock_file(self):
+        result = pr_reviewer.filter_diff(self.SAMPLE_DIFF, ["package-lock.json"])
+        self.assertNotIn("package-lock.json", result.split("Skipped")[0])
+        self.assertIn("src/main.py", result)
+
+    def test_filter_by_glob(self):
+        result = pr_reviewer.filter_diff(self.SAMPLE_DIFF, ["*.md"])
+        self.assertNotIn("README.md", result.split("Skipped")[0])
+        self.assertIn("src/main.py", result)
+
+    def test_skipped_count_in_output(self):
+        result = pr_reviewer.filter_diff(self.SAMPLE_DIFF, ["*.md", "package-lock.json"])
+        self.assertIn("Skipped 2 file(s)", result)
+
+    def test_filter_all_sections(self):
+        result = pr_reviewer.filter_diff(self.SAMPLE_DIFF, ["*.py", "*.json", "*.md"])
+        self.assertIn("Skipped 3 file(s)", result)
+
+
+# ---------------------------------------------------------------------------
+# parse_verdict
+# ---------------------------------------------------------------------------
+
+class TestParseVerdict(unittest.TestCase):
+    def _review(self, verdict_line):
+        return f"## Summary\nSome summary.\n\n## Overall Verdict\n{verdict_line}\nJustification."
+
+    def test_approve(self):
+        self.assertEqual(pr_reviewer.parse_verdict(self._review("APPROVE")), "APPROVE")
+
+    def test_approve_case_insensitive(self):
+        self.assertEqual(pr_reviewer.parse_verdict(self._review("Approve - looks good")), "APPROVE")
+
+    def test_request_changes(self):
+        self.assertEqual(pr_reviewer.parse_verdict(self._review("REQUEST CHANGES")), "REQUEST_CHANGES")
+
+    def test_request_changes_partial(self):
+        self.assertEqual(pr_reviewer.parse_verdict(self._review("REQUEST CHANGES needed")), "REQUEST_CHANGES")
+
+    def test_needs_discussion_defaults_to_comment(self):
+        self.assertEqual(pr_reviewer.parse_verdict(self._review("NEEDS DISCUSSION")), "COMMENT")
+
+    def test_no_verdict_section_defaults_to_comment(self):
+        self.assertEqual(pr_reviewer.parse_verdict("No verdict here."), "COMMENT")
+
+
+# ---------------------------------------------------------------------------
+# parse_diff_for_lines
+# ---------------------------------------------------------------------------
+
+class TestParseDiffForLines(unittest.TestCase):
+    SAMPLE_DIFF = (
+        "diff --git a/src/app.py b/src/app.py\n"
+        "index abc..def 100644\n"
+        "--- a/src/app.py\n"
+        "+++ b/src/app.py\n"
+        "@@ -1,3 +1,5 @@\n"
+        " context line\n"      # line 1 in new file (context, not added)
+        "+added line A\n"      # line 2
+        " another context\n"   # line 3 (context)
+        "+added line B\n"      # line 4
+        " last context\n"      # line 5
+        "diff --git a/tests/test.py b/tests/test.py\n"
+        "--- a/tests/test.py\n"
+        "+++ b/tests/test.py\n"
+        "@@ -0,0 +1,2 @@\n"
+        "+import pytest\n"     # line 1
+        "+def test_foo():\n"   # line 2
+    )
+
+    def test_finds_added_lines(self):
+        result = pr_reviewer.parse_diff_for_lines(self.SAMPLE_DIFF)
+        self.assertIn("src/app.py", result)
+        self.assertIn(2, result["src/app.py"])
+        self.assertIn(4, result["src/app.py"])
+
+    def test_excludes_context_lines(self):
+        result = pr_reviewer.parse_diff_for_lines(self.SAMPLE_DIFF)
+        # Line 1 is context, not an addition
+        self.assertNotIn(1, result["src/app.py"])
+
+    def test_multiple_files(self):
+        result = pr_reviewer.parse_diff_for_lines(self.SAMPLE_DIFF)
+        self.assertIn("tests/test.py", result)
+        self.assertIn(1, result["tests/test.py"])
+        self.assertIn(2, result["tests/test.py"])
+
+    def test_empty_diff(self):
+        result = pr_reviewer.parse_diff_for_lines("")
+        self.assertEqual(result, {})
+
+    def test_deleted_file_not_added(self):
+        diff = (
+            "diff --git a/old.py b/old.py\n"
+            "--- a/old.py\n"
+            "+++ /dev/null\n"
+            "@@ -1,2 +0,0 @@\n"
+            "-line1\n"
+            "-line2\n"
+        )
+        result = pr_reviewer.parse_diff_for_lines(diff)
+        self.assertNotIn("old.py", result)
+
+
+# ---------------------------------------------------------------------------
+# parse_inline_comments
+# ---------------------------------------------------------------------------
+
+class TestParseInlineComments(unittest.TestCase):
+    def setUp(self):
+        self.valid_lines = {
+            "src/app.py": {10, 20, 30},
+            "tests/test.py": {5},
+        }
+
+    def _review(self, *bullets):
+        lines = ["## Issues Found\n### Critical"]
+        for b in bullets:
+            lines.append(f"- {b}")
+        lines.append("\n## Overall Verdict\nAPPROVE")
+        return "\n".join(lines)
+
+    def test_extracts_valid_comment(self):
+        review = self._review("FILE:src/app.py LINE:10 Missing null check.")
+        _, comments = pr_reviewer.parse_inline_comments(review, self.valid_lines)
+        self.assertEqual(len(comments), 1)
+        self.assertEqual(comments[0]["path"], "src/app.py")
+        self.assertEqual(comments[0]["line"], 10)
+        self.assertIn("null check", comments[0]["body"])
+
+    def test_filters_invalid_line(self):
+        review = self._review("FILE:src/app.py LINE:999 This line doesn't exist in diff.")
+        _, comments = pr_reviewer.parse_inline_comments(review, self.valid_lines)
+        self.assertEqual(len(comments), 0)
+
+    def test_filters_unknown_file(self):
+        review = self._review("FILE:nonexistent.py LINE:1 Unknown file.")
+        _, comments = pr_reviewer.parse_inline_comments(review, self.valid_lines)
+        self.assertEqual(len(comments), 0)
+
+    def test_deduplicates_same_position(self):
+        review = self._review(
+            "FILE:src/app.py LINE:10 First issue.",
+            "FILE:src/app.py LINE:10 Second issue at same spot.",
+        )
+        _, comments = pr_reviewer.parse_inline_comments(review, self.valid_lines)
+        self.assertEqual(len(comments), 1)
+
+    def test_cleans_prefix_from_text(self):
+        review = self._review("FILE:src/app.py LINE:10 Issue here.")
+        cleaned, _ = pr_reviewer.parse_inline_comments(review, self.valid_lines)
+        self.assertNotIn("FILE:src/app.py LINE:10", cleaned)
+
+    def test_multiple_valid_comments(self):
+        review = self._review(
+            "FILE:src/app.py LINE:10 Issue one.",
+            "FILE:src/app.py LINE:20 Issue two.",
+            "FILE:tests/test.py LINE:5 Missing assertion.",
+        )
+        _, comments = pr_reviewer.parse_inline_comments(review, self.valid_lines)
+        self.assertEqual(len(comments), 3)
+
+    def test_no_comments(self):
+        review = "## Summary\nAll looks good.\n\n## Overall Verdict\nAPPROVE"
+        cleaned, comments = pr_reviewer.parse_inline_comments(review, self.valid_lines)
+        self.assertEqual(len(comments), 0)
+        self.assertEqual(cleaned, review)
+
+    def test_empty_valid_lines(self):
+        review = self._review("FILE:src/app.py LINE:10 Some issue.")
+        _, comments = pr_reviewer.parse_inline_comments(review, {})
+        self.assertEqual(len(comments), 0)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
