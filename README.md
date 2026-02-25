@@ -98,34 +98,11 @@ No dependencies. Python 3.8+, stdlib only.
 2. Sends to Claude with a structured review prompt
 3. Posts the review as a PR comment (Action) or prints to stdout (CLI)
 
-On subsequent pushes, the Action **updates the existing comment** rather than creating a new one — keeps PR threads clean.
+Reviews are posted using GitHub's [PR Reviews API](https://docs.github.com/en/rest/pulls/reviews) — the same mechanism human reviewers use. Inline comments appear directly on the relevant lines of code, not as a wall of text. On subsequent pushes, the Action updates the existing review rather than creating a new one.
 
 **What it catches**: logic bugs, security issues (injection, auth flaws, data exposure), missing error handling, performance problems, style/naming.
 
 Diffs over 40,000 characters are truncated. For large PRs, split into smaller ones.
-
-## Hosted Tier (coming soon)
-
-Don't want to manage an Anthropic API key? A hosted tier is in the works — no setup required, just plug in a key.
-
-**Planned pricing**: $29/month — 500 reviews/month.
-
-Email [adamai@agentmail.to](mailto:adamai@agentmail.to) to get on the early access list.
-
-Once available, you'll use it in your workflow:
-
-```yaml
-- uses: indoor47/claude-pr-reviewer@v1
-  with:
-    hosted_api_key: ${{ secrets.HOSTED_API_KEY }}
-```
-
-Or CLI:
-
-```bash
-export HOSTED_API_KEY=prr_...
-python pr_reviewer.py https://github.com/owner/repo/pull/123
-```
 
 ## Cost
 
@@ -168,7 +145,7 @@ A: Only if you use the hosted tier (coming soon). Self-hosted mode sends diffs d
 A: Yes. Provide a `GITHUB_TOKEN` with `repo` scope (Action or CLI). Diff is still only sent to Anthropic, never to 3rd parties.
 
 **Q: How accurate is the review?**
-A: Depends on PR clarity and code complexity. Claude catches ~90% of logic bugs, security issues, and missing error handling. Use Opus for critical PRs.
+A: Depends on PR size and complexity. Sonnet handles most reviews well. For critical or architecturally complex PRs, switch to Opus.
 
 **Q: Why Python 3.8+?**
 A: Oldest version with solid urllib/json support and type hints. No external deps = no supply chain risk.
@@ -179,4 +156,4 @@ MIT
 
 ---
 
-Built by [Adam](https://dev.to/adamai) · [dev.to article](https://dev.to/adamai/pr-reviewer-in-120-lines-no-dependencies-no-oauth-no-subscription-3283446) · Issues welcome
+Issues and PRs welcome · MIT License
