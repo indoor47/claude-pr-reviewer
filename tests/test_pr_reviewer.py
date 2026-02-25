@@ -9,6 +9,7 @@ Run: python -m pytest tests/ -v
 import sys
 import os
 import unittest
+from unittest.mock import patch, MagicMock
 
 # Allow importing from parent directory
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -303,6 +304,229 @@ class TestParseInlineComments(unittest.TestCase):
         review = self._review("FILE:src/app.py LINE:10 Some issue.")
         _, comments = pr_reviewer.parse_inline_comments(review, {})
         self.assertEqual(len(comments), 0)
+
+    # Feature 1: walkthrough table header not stripped by parse_inline_comments
+    def test_walkthrough_header_not_stripped(self):
+        review = (
+            "## Changes Walkthrough\n"
+            "| File | Change | Summary |\n"
+            "|------|--------|----------|\n"
+            "| src/app.py | Modified | Added null check. |\n"
+            "\n## Summary\nThis PR adds a null check.\n\n## Overall Verdict\nAPPROVE"
+        )
+        cleaned, comments = pr_reviewer.parse_inline_comments(review, self.valid_lines)
+        self.assertIn("## Changes Walkthrough", cleaned)
+        self.assertIn("| src/app.py | Modified |", cleaned)
+        self.assertEqual(len(comments), 0)
+
+    # Feature 2: suggestion block extraction
+    def test_fix_annotation_produces_suggestion_block(self):
+        review = self._review(
+            "FILE:src/app.py LINE:10 Null input crashes here. [FIX: value = value or \"\"]"
+        )
+        _, comments = pr_reviewer.parse_inline_comments(review, self.valid_lines)
+        self.assertEqual(len(comments), 1)
+        body = comments[0]["body"]
+        self.assertIn("```suggestion", body)
+        self.assertIn('value = value or ""', body)
+
+    def test_fix_annotation_removed_from_description(self):
+        review = self._review(
+            "FILE:src/app.py LINE:10 Null input crashes here. [FIX: value = value or \"\"]"
+        )
+        _, comments = pr_reviewer.parse_inline_comments(review, self.valid_lines)
+        self.assertEqual(len(comments), 1)
+        body = comments[0]["body"]
+        self.assertNotIn("[FIX:", body)
+        self.assertIn("Null input crashes here.", body)
+
+    def test_no_fix_annotation_body_unchanged(self):
+        review = self._review("FILE:src/app.py LINE:10 Missing null check.")
+        _, comments = pr_reviewer.parse_inline_comments(review, self.valid_lines)
+        self.assertEqual(len(comments), 1)
+        body = comments[0]["body"]
+        self.assertNotIn("```suggestion", body)
+        self.assertEqual(body, "Missing null check.")
+
+
+# ---------------------------------------------------------------------------
+# get_previous_review_comments
+# ---------------------------------------------------------------------------
+
+class TestGetPreviousReviewComments(unittest.TestCase):
+    def test_returns_comment_bodies(self):
+        mock_comments = [
+            {"body": "Missing null check on line 10.", "id": 1},
+            {"body": "Variable name is confusing.", "id": 2},
+        ]
+        with patch.object(pr_reviewer, "github_request", return_value=mock_comments):
+            result = pr_reviewer.get_previous_review_comments("owner", "repo", 42, 999)
+        self.assertEqual(len(result), 2)
+        self.assertIn("Missing null check on line 10.", result)
+        self.assertIn("Variable name is confusing.", result)
+
+    def test_returns_empty_list_on_api_failure(self):
+        with patch.object(pr_reviewer, "github_request", side_effect=SystemExit(1)):
+            result = pr_reviewer.get_previous_review_comments("owner", "repo", 42, 999)
+        self.assertEqual(result, [])
+
+    def test_skips_empty_body_comments(self):
+        mock_comments = [
+            {"body": "Real issue here.", "id": 1},
+            {"body": "", "id": 2},
+            {"body": "   ", "id": 3},
+            {"id": 4},  # no body key
+        ]
+        with patch.object(pr_reviewer, "github_request", return_value=mock_comments):
+            result = pr_reviewer.get_previous_review_comments("owner", "repo", 1, 100)
+        # Only the non-empty body survives; whitespace-only strip() gives "" which is falsy
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0], "Real issue here.")
+
+
+# ---------------------------------------------------------------------------
+# _parse_simple_yaml
+# ---------------------------------------------------------------------------
+
+class TestParseSimpleYaml(unittest.TestCase):
+    def test_string_value(self):
+        result = pr_reviewer._parse_simple_yaml("model: claude-haiku-4-5-20251001\n")
+        self.assertEqual(result["model"], "claude-haiku-4-5-20251001")
+
+    def test_integer_value(self):
+        result = pr_reviewer._parse_simple_yaml("max_tokens: 2048\n")
+        self.assertEqual(result["max_tokens"], 2048)
+
+    def test_bool_true(self):
+        result = pr_reviewer._parse_simple_yaml("walkthrough: true\n")
+        self.assertTrue(result["walkthrough"])
+
+    def test_bool_false(self):
+        result = pr_reviewer._parse_simple_yaml("walkthrough: false\n")
+        self.assertFalse(result["walkthrough"])
+
+    def test_bool_yes_no(self):
+        result = pr_reviewer._parse_simple_yaml("walkthrough: yes\n")
+        self.assertTrue(result["walkthrough"])
+        result = pr_reviewer._parse_simple_yaml("walkthrough: no\n")
+        self.assertFalse(result["walkthrough"])
+
+    def test_list_values(self):
+        yaml = "ignore_patterns:\n  - '*.lock'\n  - dist/**\n"
+        result = pr_reviewer._parse_simple_yaml(yaml)
+        self.assertEqual(result["ignore_patterns"], ["*.lock", "dist/**"])
+
+    def test_comment_stripped(self):
+        result = pr_reviewer._parse_simple_yaml("model: claude-sonnet-4-6  # fast\n")
+        self.assertEqual(result["model"], "claude-sonnet-4-6")
+
+    def test_quoted_string(self):
+        result = pr_reviewer._parse_simple_yaml('model: "claude-sonnet-4-6"\n')
+        self.assertEqual(result["model"], "claude-sonnet-4-6")
+
+    def test_multiple_keys(self):
+        yaml = "model: claude-haiku-4-5-20251001\nstrictness: strict\nmax_tokens: 1024\n"
+        result = pr_reviewer._parse_simple_yaml(yaml)
+        self.assertEqual(result["model"], "claude-haiku-4-5-20251001")
+        self.assertEqual(result["strictness"], "strict")
+        self.assertEqual(result["max_tokens"], 1024)
+
+    def test_empty_string(self):
+        self.assertEqual(pr_reviewer._parse_simple_yaml(""), {})
+
+    def test_blank_lines_ignored(self):
+        yaml = "\n\nmodel: claude-sonnet-4-6\n\n"
+        result = pr_reviewer._parse_simple_yaml(yaml)
+        self.assertEqual(result["model"], "claude-sonnet-4-6")
+
+
+# ---------------------------------------------------------------------------
+# apply_config
+# ---------------------------------------------------------------------------
+
+class TestApplyConfig(unittest.TestCase):
+    def setUp(self):
+        # Save original globals
+        self._orig_model = pr_reviewer.CLAUDE_MODEL
+        self._orig_tokens = pr_reviewer.MAX_TOKENS
+        self._orig_ignore = pr_reviewer.IGNORE_PATTERNS[:]
+        self._orig_strictness = pr_reviewer.REVIEW_STRICTNESS
+        self._orig_walkthrough = pr_reviewer.REVIEW_WALKTHROUGH
+
+    def tearDown(self):
+        pr_reviewer.CLAUDE_MODEL = self._orig_model
+        pr_reviewer.MAX_TOKENS = self._orig_tokens
+        pr_reviewer.IGNORE_PATTERNS = self._orig_ignore
+        pr_reviewer.REVIEW_STRICTNESS = self._orig_strictness
+        pr_reviewer.REVIEW_WALKTHROUGH = self._orig_walkthrough
+
+    def test_model_applied(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("CLAUDE_MODEL", None)
+            pr_reviewer.apply_config({"model": "claude-haiku-4-5-20251001"})
+        self.assertEqual(pr_reviewer.CLAUDE_MODEL, "claude-haiku-4-5-20251001")
+
+    def test_env_var_overrides_config(self):
+        # When CLAUDE_MODEL is set in env, apply_config must not overwrite the global
+        # with the config value. The global retains its pre-call value.
+        original = pr_reviewer.CLAUDE_MODEL
+        with patch.dict(os.environ, {"CLAUDE_MODEL": original}):
+            pr_reviewer.apply_config({"model": "claude-haiku-4-5-20251001"})
+        self.assertNotEqual(pr_reviewer.CLAUDE_MODEL, "claude-haiku-4-5-20251001")
+        self.assertEqual(pr_reviewer.CLAUDE_MODEL, original)
+
+    def test_max_tokens_applied(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MAX_TOKENS", None)
+            pr_reviewer.apply_config({"max_tokens": 2048})
+        self.assertEqual(pr_reviewer.MAX_TOKENS, 2048)
+
+    def test_ignore_patterns_list_applied(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("IGNORE_PATTERNS", None)
+            pr_reviewer.apply_config({"ignore_patterns": ["*.lock", "dist/**"]})
+        self.assertEqual(pr_reviewer.IGNORE_PATTERNS, ["*.lock", "dist/**"])
+
+    def test_strictness_applied(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("REVIEW_STRICTNESS", None)
+            pr_reviewer.apply_config({"strictness": "strict"})
+        self.assertEqual(pr_reviewer.REVIEW_STRICTNESS, "strict")
+
+    def test_walkthrough_false_applied(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("REVIEW_WALKTHROUGH", None)
+            pr_reviewer.apply_config({"walkthrough": False})
+        self.assertEqual(pr_reviewer.REVIEW_WALKTHROUGH, "false")
+
+    def test_empty_config_no_change(self):
+        original_model = pr_reviewer.CLAUDE_MODEL
+        with patch.dict(os.environ, {}, clear=False):
+            pr_reviewer.apply_config({})
+        self.assertEqual(pr_reviewer.CLAUDE_MODEL, original_model)
+
+
+# ---------------------------------------------------------------------------
+# load_config
+# ---------------------------------------------------------------------------
+
+class TestLoadConfig(unittest.TestCase):
+    def test_loads_from_workspace(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = os.path.join(tmpdir, ".pr-reviewer.yml")
+            with open(config_path, "w") as f:
+                f.write("strictness: lenient\n")
+            with patch.dict(os.environ, {"GITHUB_WORKSPACE": tmpdir}):
+                result = pr_reviewer.load_config()
+        self.assertEqual(result.get("strictness"), "lenient")
+
+    def test_returns_empty_if_no_file(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(os.environ, {"GITHUB_WORKSPACE": tmpdir}):
+                result = pr_reviewer.load_config()
+        self.assertEqual(result, {})
 
 
 if __name__ == "__main__":

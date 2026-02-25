@@ -28,12 +28,95 @@ CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
 MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "4096"))
 IGNORE_PATTERNS = [p.strip() for p in os.environ.get("IGNORE_PATTERNS", "").split(",") if p.strip()]
 REVIEW_STRICTNESS = os.environ.get("REVIEW_STRICTNESS", "balanced")
+REVIEW_WALKTHROUGH = os.environ.get("REVIEW_WALKTHROUGH", "true")
+
+CONFIG_FILE = ".pr-reviewer.yml"
+
+
+def _parse_simple_yaml(text):
+    """Parse a minimal YAML subset: scalar key: value pairs and string lists.
+
+    Supports:
+      key: value
+      key: true / false / integer
+      key:
+        - item1
+        - item2
+    Does not support nested dicts, anchors, or multi-line values.
+    """
+    result = {}
+    current_key = None
+    for raw_line in text.splitlines():
+        line = raw_line.split("#")[0].rstrip()
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # List item under current key
+        if stripped.startswith("- "):
+            if current_key is not None and isinstance(result.get(current_key), list):
+                result[current_key].append(stripped[2:].strip().strip("\"'"))
+            continue
+        # Key: value or Key: (list follows)
+        if ":" in stripped and not stripped.startswith("-"):
+            colon = stripped.index(":")
+            key = stripped[:colon].strip()
+            val = stripped[colon + 1:].strip().strip("\"'")
+            current_key = key
+            if val == "":
+                result[key] = []  # list will be filled by subsequent "- " lines
+            elif val.lower() in ("true", "yes"):
+                result[key] = True
+            elif val.lower() in ("false", "no"):
+                result[key] = False
+            elif val.isdigit():
+                result[key] = int(val)
+            else:
+                result[key] = val
+    return result
+
+
+def load_config():
+    """Load .pr-reviewer.yml from the repo root.
+
+    In GitHub Actions, uses GITHUB_WORKSPACE. Falls back to cwd.
+    Returns a dict (empty if file absent or unreadable).
+    """
+    workspace = os.environ.get("GITHUB_WORKSPACE", ".")
+    config_path = pathlib.Path(workspace) / CONFIG_FILE
+    if not config_path.exists():
+        return {}
+    try:
+        return _parse_simple_yaml(config_path.read_text(encoding="utf-8"))
+    except OSError:
+        return {}
+
+
+def apply_config(config):
+    """Apply config file values to globals. Env vars always take precedence."""
+    global CLAUDE_MODEL, MAX_TOKENS, IGNORE_PATTERNS, REVIEW_STRICTNESS, REVIEW_WALKTHROUGH
+    if "model" in config and "CLAUDE_MODEL" not in os.environ:
+        CLAUDE_MODEL = str(config["model"])
+    if "max_tokens" in config and "MAX_TOKENS" not in os.environ:
+        MAX_TOKENS = int(config["max_tokens"])
+    if "ignore_patterns" in config and "IGNORE_PATTERNS" not in os.environ:
+        val = config["ignore_patterns"]
+        if isinstance(val, list):
+            IGNORE_PATTERNS = val
+        elif isinstance(val, str):
+            IGNORE_PATTERNS = [p.strip() for p in val.split(",") if p.strip()]
+    if "strictness" in config and "REVIEW_STRICTNESS" not in os.environ:
+        REVIEW_STRICTNESS = str(config["strictness"])
+    if "walkthrough" in config and "REVIEW_WALKTHROUGH" not in os.environ:
+        REVIEW_WALKTHROUGH = "true" if config["walkthrough"] else "false"
+
 
 MODEL_PRICING_PER_MTOK = {
     "claude-opus-4-6": (15.0, 75.0),
     "claude-sonnet-4-6": (3.0, 15.0),
     "claude-haiku-4-5-20251001": (0.80, 4.0),
 }
+
+apply_config(load_config())
 
 LICENSE_DIR = pathlib.Path.home() / ".claude-pr-reviewer"
 LICENSE_FILE = LICENSE_DIR / "license"
@@ -85,6 +168,16 @@ Diff:
 
 Respond in this exact format:
 
+First, produce a Changes Walkthrough table listing every file in the diff.
+For each file: the path (verbatim from the diff header), the change type
+(Added/Modified/Removed/Renamed), and a one-sentence summary of what changed
+and what it does. Order by significance (most impactful files first).
+
+## Changes Walkthrough
+| File | Change | Summary |
+|------|--------|---------|
+| path/to/file.ext | Added/Modified/Removed/Renamed | One sentence description. |
+
 ## Summary
 One paragraph describing what this PR does.
 
@@ -112,6 +205,9 @@ One sentence justification.
 
 When an issue can be pinpointed to a specific line in the diff, prefix that bullet with FILE:path/to/file LINE:N using the exact file path from the diff header and the line number in the new file. Only use this prefix when you are certain of the exact line. Example:
 - FILE:src/auth.py LINE:23 Missing input validation allows injection.
+
+When a bug has an obvious single-line fix, append [FIX: corrected line here] to the bullet. Only use this when the replacement is a complete, self-contained single line. Do not use it for multi-line changes or architectural issues.
+Example: FILE:src/auth.py LINE:23 Null input crashes here. [FIX: value = value or ""]
 """
 
 
@@ -342,6 +438,7 @@ def parse_inline_comments(review_text, valid_lines):
 
     Returns (cleaned_text, [{"path": ..., "line": ..., "body": ...}]).
     Only includes comments whose (path, line) exist in valid_lines.
+    Detects [FIX: ...] annotations and wraps them in GitHub suggestion blocks.
     """
     pattern = re.compile(r'FILE:(\S+)\s+LINE:(\d+)\s+(.+)')
     comments = []
@@ -358,6 +455,13 @@ def parse_inline_comments(review_text, valid_lines):
         if pos_key in used_positions:
             continue
         if body:
+            # Feature 2: detect [FIX: ...] and convert to suggestion block
+            fix_match = re.search(r'\[FIX:\s*(.+?)\]', body)
+            if fix_match:
+                fix_code = fix_match.group(1).strip()
+                body = re.sub(r'\s*\[FIX:\s*.+?\]', '', body).strip()
+                body = f"{body}\n\n```suggestion\n{fix_code}\n```"
+
             comments.append({"path": path, "line": line, "body": body})
             used_positions.add(pos_key)
 
@@ -376,6 +480,17 @@ def find_existing_pr_review(owner, repo, pr_number):
     except SystemExit:
         pass
     return None
+
+
+def get_previous_review_comments(owner, repo, pr_number, review_id):
+    """Fetch inline comment bodies from a previous PR review."""
+    url = (f"https://api.github.com/repos/{owner}/{repo}"
+           f"/pulls/{pr_number}/reviews/{review_id}/comments")
+    try:
+        comments = github_request(url)
+        return [c.get("body", "").strip() for c in comments if c.get("body", "").strip()]
+    except SystemExit:
+        return []
 
 
 def post_pr_review(owner, repo, pr_number, head_sha, body, event, comments):
@@ -526,7 +641,7 @@ def get_action_context():
     }
 
 
-def run_review(owner, repo, pr_number):
+def run_review(owner, repo, pr_number, previous_comments=None):
     """Fetch PR data, get diff, run Claude review, return the review text."""
     api_base = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}"
 
@@ -548,6 +663,22 @@ def run_review(owner, repo, pr_number):
     strictness_note = _STRICTNESS_ADDENDUM.get(REVIEW_STRICTNESS, "")
     if strictness_note:
         prompt += f"\n\n{strictness_note}"
+
+    # Feature 1: omit walkthrough table if disabled
+    if REVIEW_WALKTHROUGH == 'false':
+        prompt += "\n\nOmit the Changes Walkthrough table."
+
+    # Feature 3: smart re-reviews — append previous comments to prompt
+    if previous_comments:
+        capped = previous_comments[:20]
+        issues_text = "\n".join(f"- {c}" for c in capped)
+        prompt += (
+            "\n\nPreviously flagged issues from the last review:\n"
+            f"{issues_text}\n\n"
+            "If any of these are fixed in the current diff, begin your summary with "
+            "'Fixes from last review:' and list them. Do not re-explain unfixed issues "
+            "at length — just note they persist. Focus your detailed feedback on NEW issues only."
+        )
 
     print(f"  Reviewing with {CLAUDE_MODEL} (strictness: {REVIEW_STRICTNESS})...")
     review, usage = claude_review(prompt)
@@ -595,7 +726,18 @@ def main():
                 github_post(ctx["comments_url"], {"body": comment_body})
                 print(f"  Review posted on PR #{ctx['number']}")
         else:
-            review, _, diff = run_review(ctx["owner"], ctx["repo"], ctx["number"])
+            # Feature 3: fetch previous review and its comments before running review
+            existing_review_id = find_existing_pr_review(ctx["owner"], ctx["repo"], ctx["number"])
+            previous_comments = None
+            if existing_review_id:
+                previous_comments = get_previous_review_comments(
+                    ctx["owner"], ctx["repo"], ctx["number"], existing_review_id
+                )
+
+            review, _, diff = run_review(
+                ctx["owner"], ctx["repo"], ctx["number"],
+                previous_comments=previous_comments,
+            )
             footer = f"\n\n---\n*Reviewed by [claude-pr-reviewer](https://github.com/indoor47/claude-pr-reviewer) using {CLAUDE_MODEL}*"
 
             valid_lines = parse_diff_for_lines(diff)
@@ -603,7 +745,6 @@ def main():
             event = parse_verdict(cleaned_review)
             review_body = f"{REVIEW_MARKER}\n## Claude Code Review\n\n{cleaned_review}{footer}"
 
-            existing_review_id = find_existing_pr_review(ctx["owner"], ctx["repo"], ctx["number"])
             if existing_review_id:
                 print("  Updating existing PR review...")
                 patch_url = f"https://api.github.com/repos/{ctx['owner']}/{ctx['repo']}/pulls/{ctx['number']}/reviews/{existing_review_id}"

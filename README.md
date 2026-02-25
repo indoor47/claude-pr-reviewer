@@ -83,6 +83,25 @@ cause silent failures in production.
 | `strictness` | no | `balanced` | `lenient` (critical+security only), `balanced` (default), `strict` (adds test coverage, docs, tech debt) |
 | `ignore_patterns` | no | — | Comma-separated globs for files to skip (e.g. `"*.md,*.lock"`) |
 
+### Config file (optional)
+
+Instead of putting everything in your workflow YAML, drop a `.pr-reviewer.yml` in your repo root:
+
+```yaml
+# .pr-reviewer.yml
+strictness: balanced      # lenient | balanced | strict
+model: claude-sonnet-4-6  # or claude-haiku-4-5-20251001 / claude-opus-4-6
+max_tokens: 4096
+walkthrough: true
+ignore_patterns:
+  - "*.lock"
+  - "dist/**"
+  - "*.min.js"
+  - "migrations/**"
+```
+
+The config file is picked up automatically — no changes to your workflow needed. Environment variables and Action inputs always take precedence over the config file, so you can override per-environment without editing the file.
+
 ### Setup
 
 1. Get an API key at [console.anthropic.com](https://console.anthropic.com)
