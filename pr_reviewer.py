@@ -33,6 +33,7 @@ LICENSE_FILE = LICENSE_DIR / "license"
 
 STRIPE_URL = "STRIPE_URL_PLACEHOLDER"
 SUPPORT_EMAIL = "adamai@agentmail.to"
+REVIEW_MARKER = "<!-- claude-pr-reviewer -->"
 
 UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
@@ -220,6 +221,41 @@ def github_post(url, data):
         body = e.read().decode()
         print(f"GitHub POST error {e.code}: {body}", file=sys.stderr)
         sys.exit(1)
+
+
+def github_patch(url, data):
+    headers = {
+        "Accept": "application/vnd.github.v3+json",
+        "User-Agent": "claude-pr-reviewer",
+        "Content-Type": "application/json",
+    }
+    if GITHUB_TOKEN:
+        headers["Authorization"] = f"token {GITHUB_TOKEN}"
+    payload = json.dumps(data).encode()
+    req = urllib.request.Request(url, data=payload, headers=headers, method="PATCH")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        body = e.read().decode()
+        print(f"GitHub PATCH error {e.code}: {body}", file=sys.stderr)
+        sys.exit(1)
+
+
+def find_existing_review_comment(comments_url):
+    """Return the comment ID of an existing review comment, or None."""
+    page = 1
+    while True:
+        url = f"{comments_url}?per_page=100&page={page}"
+        comments = github_request(url)
+        if not comments:
+            return None
+        for comment in comments:
+            if REVIEW_MARKER in comment.get("body", ""):
+                return comment["id"]
+        if len(comments) < 100:
+            return None
+        page += 1
 
 
 def hosted_review(pr_url):
@@ -413,10 +449,18 @@ def main():
             review, _ = run_review(ctx["owner"], ctx["repo"], ctx["number"])
             footer = f"\n\n---\n*Reviewed by [claude-pr-reviewer](https://github.com/indoor47/claude-pr-reviewer) using {CLAUDE_MODEL}*"
 
-        comment_body = f"## Claude Code Review\n\n{review}{footer}"
-        print("  Posting review comment...")
-        github_post(ctx["comments_url"], {"body": comment_body})
-        print(f"  Review posted on PR #{ctx['number']}")
+        comment_body = f"{REVIEW_MARKER}\n## Claude Code Review\n\n{review}{footer}"
+        existing_id = find_existing_review_comment(ctx["comments_url"])
+        if existing_id:
+            print("  Updating existing review comment...")
+            repo = f"{ctx['owner']}/{ctx['repo']}"
+            patch_url = f"https://api.github.com/repos/{repo}/issues/comments/{existing_id}"
+            github_patch(patch_url, {"body": comment_body})
+            print(f"  Review updated on PR #{ctx['number']}")
+        else:
+            print("  Posting review comment...")
+            github_post(ctx["comments_url"], {"body": comment_body})
+            print(f"  Review posted on PR #{ctx['number']}")
 
     else:
         if len(sys.argv) < 2:
