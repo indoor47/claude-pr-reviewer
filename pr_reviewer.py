@@ -19,6 +19,8 @@ import urllib.error
 
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
+HOSTED_API_KEY = os.environ.get("HOSTED_API_KEY")
+HOSTED_API_URL = os.environ.get("HOSTED_API_URL", "https://api.memfun.dev")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
 MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "4096"))
@@ -108,6 +110,25 @@ def github_post(url, data):
     except urllib.error.HTTPError as e:
         body = e.read().decode()
         print(f"GitHub POST error {e.code}: {body}", file=sys.stderr)
+        sys.exit(1)
+
+
+def hosted_review(pr_url):
+    """Call the hosted review API. Returns review text."""
+    payload = json.dumps({"pr_url": pr_url, "api_key": HOSTED_API_KEY}).encode()
+    req = urllib.request.Request(
+        f"{HOSTED_API_URL}/review",
+        data=payload,
+        headers={"Content-Type": "application/json", "User-Agent": "claude-pr-reviewer"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            data = json.loads(resp.read())
+            return data.get("review", "")
+    except urllib.error.HTTPError as e:
+        body = e.read().decode()
+        print(f"Hosted API error {e.code}: {body}", file=sys.stderr)
         sys.exit(1)
 
 
@@ -229,10 +250,17 @@ def main():
             print("Could not read GitHub Actions event context.", file=sys.stderr)
             sys.exit(1)
 
-        review, title = run_review(ctx["owner"], ctx["repo"], ctx["number"])
+        pr_url = f"https://github.com/{ctx['owner']}/{ctx['repo']}/pull/{ctx['number']}"
 
-        comment_body = f"## Claude Code Review\n\n{review}\n\n---\n*Reviewed by [claude-pr-reviewer](https://github.com/indoor47/claude-pr-reviewer) using {CLAUDE_MODEL}*"
+        if HOSTED_API_KEY:
+            print(f"  Using hosted review API for PR #{ctx['number']}...")
+            review = hosted_review(pr_url)
+            footer = f"\n\n---\n*Reviewed by [claude-pr-reviewer](https://github.com/indoor47/claude-pr-reviewer) (hosted tier)*"
+        else:
+            review, _ = run_review(ctx["owner"], ctx["repo"], ctx["number"])
+            footer = f"\n\n---\n*Reviewed by [claude-pr-reviewer](https://github.com/indoor47/claude-pr-reviewer) using {CLAUDE_MODEL}*"
 
+        comment_body = f"## Claude Code Review\n\n{review}{footer}"
         print("  Posting review comment...")
         github_post(ctx["comments_url"], {"body": comment_body})
         print(f"  Review posted on PR #{ctx['number']}")
@@ -244,10 +272,14 @@ def main():
             sys.exit(1)
 
         pr_url = sys.argv[1]
-        owner, repo, pr_number = parse_pr_url(pr_url)
 
-        print(f"Fetching PR #{pr_number} from {owner}/{repo}...")
-        review, title = run_review(owner, repo, pr_number)
+        if HOSTED_API_KEY:
+            print(f"Calling hosted review API...")
+            review = hosted_review(pr_url)
+        else:
+            owner, repo, pr_number = parse_pr_url(pr_url)
+            print(f"Fetching PR #{pr_number} from {owner}/{repo}...")
+            review, _ = run_review(owner, repo, pr_number)
 
         print("\n" + "=" * 60)
         print(review)

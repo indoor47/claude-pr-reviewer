@@ -96,9 +96,34 @@ No dependencies. Python 3.8+, stdlib only.
 
 Diffs over 40,000 characters are truncated. For large PRs, split into smaller ones.
 
+## Hosted Tier
+
+Don't want to manage an Anthropic API key? Use the hosted tier.
+
+**$29/month** — 500 reviews/month, no API key required.
+
+[Get access →](https://buy.stripe.com/PLACEHOLDER)
+
+Once you pay, you'll receive an API key at your email. Use it in your workflow:
+
+```yaml
+- uses: indoor47/claude-pr-reviewer@v1
+  with:
+    hosted_api_key: ${{ secrets.HOSTED_API_KEY }}
+```
+
+Or CLI:
+
+```bash
+export HOSTED_API_KEY=prr_...
+python pr_reviewer.py https://github.com/owner/repo/pull/123
+```
+
+No Anthropic account needed. Reviews run on Haiku (fast, cheap, sharp enough for most PRs).
+
 ## Cost
 
-Each review costs roughly $0.003–0.02 with Sonnet (default) or $0.01–0.05 with Opus. Haiku is cheapest at ~$0.001 per review. A team running 20 PRs/day spends about $1–2/month.
+Self-hosted: each review costs roughly $0.003–0.02 with Sonnet (default) or $0.01–0.05 with Opus. Haiku is cheapest at ~$0.001 per review. A team running 20 PRs/day spends about $1–2/month.
 
 ## License
 

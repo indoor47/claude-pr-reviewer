@@ -8,8 +8,13 @@ branding:
 
 inputs:
   anthropic_api_key:
-    description: 'Your Anthropic API key (store as a repository secret)'
-    required: true
+    description: 'Your Anthropic API key. Use this OR hosted_api_key, not both.'
+    required: false
+    default: ''
+  hosted_api_key:
+    description: 'Hosted tier API key from indoor47/claude-pr-reviewer. No Anthropic account needed.'
+    required: false
+    default: ''
   model:
     description: 'Claude model to use (claude-sonnet-4-6, claude-opus-4-6, claude-haiku-4-5-20251001)'
     required: false
@@ -27,6 +32,7 @@ runs:
       run: python3 ${{ github.action_path }}/pr_reviewer.py
       env:
         ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
+        HOSTED_API_KEY: ${{ inputs.hosted_api_key }}
         GITHUB_TOKEN: ${{ github.token }}
         CLAUDE_MODEL: ${{ inputs.model }}
         MAX_TOKENS: ${{ inputs.max_tokens }}
