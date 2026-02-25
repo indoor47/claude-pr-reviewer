@@ -14,6 +14,7 @@ import os
 import sys
 import re
 import json
+import fnmatch
 import urllib.request
 import urllib.error
 import pathlib
@@ -25,6 +26,7 @@ HOSTED_API_URL = os.environ.get("HOSTED_API_URL", "https://api.memfun.dev")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
 MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "4096"))
+IGNORE_PATTERNS = [p.strip() for p in os.environ.get("IGNORE_PATTERNS", "").split(",") if p.strip()]
 
 LICENSE_DIR = pathlib.Path.home() / ".claude-pr-reviewer"
 LICENSE_FILE = LICENSE_DIR / "license"
@@ -278,6 +280,39 @@ def parse_pr_url(url):
     return match.group(1), match.group(2), int(match.group(3))
 
 
+def filter_diff(diff, ignore_patterns):
+    """Remove diff sections for files matching any of the ignore patterns."""
+    if not ignore_patterns:
+        return diff
+
+    sections = re.split(r"(?=^diff --git )", diff, flags=re.MULTILINE)
+    kept = []
+    skipped = []
+
+    for section in sections:
+        if not section.startswith("diff --git"):
+            kept.append(section)
+            continue
+
+        first_line = section.split("\n")[0]
+        match = re.match(r"^diff --git a/(.+) b/(.+)$", first_line)
+        if not match:
+            kept.append(section)
+            continue
+
+        filename = match.group(2)
+        if any(fnmatch.fnmatch(filename, pat) for pat in ignore_patterns):
+            skipped.append(filename)
+            continue
+
+        kept.append(section)
+
+    result = "".join(kept)
+    if skipped:
+        result += f"\n\n[Skipped {len(skipped)} file(s) matching ignore patterns: {', '.join(skipped[:5])}{'...' if len(skipped) > 5 else ''}]"
+    return result
+
+
 def truncate_diff(diff, max_chars=40000):
     if len(diff) <= max_chars:
         return diff
@@ -339,6 +374,7 @@ def run_review(owner, repo, pr_number):
     print(f"  Changes: +{additions} -{deletions} across {changed_files} files")
 
     diff = github_diff_request(api_base)
+    diff = filter_diff(diff, IGNORE_PATTERNS)
     diff = truncate_diff(diff)
 
     prompt = REVIEW_PROMPT.format(title=title, body=body, diff=diff)

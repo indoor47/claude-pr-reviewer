@@ -23,6 +23,10 @@ inputs:
     description: 'Maximum tokens for the review response'
     required: false
     default: '4096'
+  ignore_patterns:
+    description: 'Comma-separated glob patterns for files to skip (e.g., "*.md,*.lock,package-lock.json")'
+    required: false
+    default: ''
 
 runs:
   using: 'composite'
@@ -36,3 +40,4 @@ runs:
         GITHUB_TOKEN: ${{ github.token }}
         CLAUDE_MODEL: ${{ inputs.model }}
         MAX_TOKENS: ${{ inputs.max_tokens }}
+        IGNORE_PATTERNS: ${{ inputs.ignore_patterns }}
