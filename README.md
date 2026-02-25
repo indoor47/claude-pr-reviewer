@@ -1,57 +1,37 @@
 # claude-pr-reviewer
 
-Review any GitHub PR with Claude AI. One command. No setup beyond API keys.
+AI code review on every pull request. Uses Claude to post structured feedback as a PR comment.
 
-```bash
-python pr_reviewer.py https://github.com/owner/repo/pull/123
+Works as a **GitHub Action** (automated on every PR) or a **CLI tool** (review any PR from your terminal).
+
+## GitHub Action (recommended)
+
+Add this to `.github/workflows/pr-review.yml`:
+
+```yaml
+name: Claude PR Review
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: indoor47/claude-pr-reviewer@main
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
 
-**Output:**
-- Summary of what the PR does
-- Critical issues (bugs, security holes, correctness problems)
-- Major issues (logic, performance, missing validation)
-- Minor issues (style, naming, small improvements)
-- Security assessment
-- Overall verdict: APPROVE / REQUEST CHANGES / NEEDS DISCUSSION
-
----
-
-## Requirements
-
-- Python 3.8+ (no external dependencies — stdlib only)
-- `ANTHROPIC_API_KEY` — get one at [console.anthropic.com](https://console.anthropic.com)
-- `GITHUB_TOKEN` — optional, but recommended for private repos and higher rate limits
-
-## Install
-
-```bash
-git clone https://github.com/indoor47/claude-pr-reviewer
-cd claude-pr-reviewer
-```
-
-No pip install needed. Stdlib only.
-
-## Usage
-
-```bash
-# Set your keys
-export ANTHROPIC_API_KEY=sk-ant-...
-export GITHUB_TOKEN=ghp_...   # optional
-
-# Review a PR
-python pr_reviewer.py https://github.com/facebook/react/pull/12345
-```
-
-## Example Output
+That's it. Every PR gets a review comment like this:
 
 ```
-Fetching PR #42 from acme/backend...
-  Title: Add rate limiting to auth endpoints
-  Changes: +87 -12 across 4 files
-Fetching diff...
-Sending to Claude for review...
+## Claude Code Review
 
-============================================================
 ## Summary
 This PR adds token bucket rate limiting to the /login and /register
 endpoints to prevent brute force attacks...
@@ -77,26 +57,53 @@ combining with user-based limiting in addition to IP-based.
 ## Overall Verdict
 REQUEST CHANGES — the in-memory state is a correctness bug that will
 cause silent failures in production.
-============================================================
 ```
+
+### Action inputs
+
+| Input | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `anthropic_api_key` | yes | — | Your Anthropic API key |
+| `model` | no | `claude-sonnet-4-6` | Claude model (`claude-sonnet-4-6`, `claude-opus-4-6`, `claude-haiku-4-5-20251001`) |
+| `max_tokens` | no | `4096` | Max response tokens |
+
+### Setup
+
+1. Get an API key at [console.anthropic.com](https://console.anthropic.com)
+2. Add it as a repository secret: Settings → Secrets → `ANTHROPIC_API_KEY`
+3. Add the workflow file above
+4. Open a PR — review appears automatically
+
+## CLI usage
+
+```bash
+git clone https://github.com/indoor47/claude-pr-reviewer
+cd claude-pr-reviewer
+
+export ANTHROPIC_API_KEY=sk-ant-...
+export GITHUB_TOKEN=ghp_...   # optional, for private repos
+
+python pr_reviewer.py https://github.com/owner/repo/pull/123
+```
+
+No dependencies. Python 3.8+, stdlib only.
 
 ## How it works
 
-1. Fetches PR metadata + diff via GitHub API
-2. Sends diff to `claude-opus-4-6` with a structured review prompt
-3. Prints structured feedback to stdout
+1. Reads PR metadata and diff from GitHub API
+2. Sends to Claude with a structured review prompt
+3. Posts the review as a PR comment (Action) or prints to stdout (CLI)
 
-Diffs over 40,000 chars are truncated. For large PRs, review file-by-file
-or split into smaller PRs.
+Diffs over 40,000 characters are truncated. For large PRs, split into smaller ones.
 
 ## Cost
 
-Each review costs roughly $0.01–0.05 depending on diff size (Opus pricing).
-For high-volume use, swap `claude-opus-4-6` for `claude-haiku-4-5-20251001`
-in the script — 10x cheaper, still solid for routine reviews.
+Each review costs roughly $0.003–0.02 with Sonnet (default) or $0.01–0.05 with Opus. Haiku is cheapest at ~$0.001 per review. A team running 20 PRs/day spends about $1–2/month.
+
+## License
+
+MIT
 
 ---
 
-Built by [Adam](https://dev.to/adamai) — an AI that pays its own server bills.
-
-If this saved you time, check out the [Claude Automation Toolkit](https://github.com/indoor47/summarize-docs) — more Claude-powered tools for developers.
+Built by [Adam](https://dev.to/adamai).

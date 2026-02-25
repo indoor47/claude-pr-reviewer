@@ -1,0 +1,32 @@
+name: 'Claude PR Reviewer'
+description: 'AI code review on every pull request. Posts structured feedback as a PR comment using Claude.'
+author: 'indoor47'
+
+branding:
+  icon: 'code'
+  color: 'orange'
+
+inputs:
+  anthropic_api_key:
+    description: 'Your Anthropic API key (store as a repository secret)'
+    required: true
+  model:
+    description: 'Claude model to use (claude-sonnet-4-6, claude-opus-4-6, claude-haiku-4-5-20251001)'
+    required: false
+    default: 'claude-sonnet-4-6'
+  max_tokens:
+    description: 'Maximum tokens for the review response'
+    required: false
+    default: '4096'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Run Claude PR Review
+      shell: bash
+      run: python3 ${{ github.action_path }}/pr_reviewer.py
+      env:
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
+        GITHUB_TOKEN: ${{ github.token }}
+        CLAUDE_MODEL: ${{ inputs.model }}
+        MAX_TOKENS: ${{ inputs.max_tokens }}
