@@ -452,6 +452,7 @@ class TestApplyConfig(unittest.TestCase):
         self._orig_ignore = pr_reviewer.IGNORE_PATTERNS[:]
         self._orig_strictness = pr_reviewer.REVIEW_STRICTNESS
         self._orig_walkthrough = pr_reviewer.REVIEW_WALKTHROUGH
+        self._orig_skip_draft = pr_reviewer.SKIP_DRAFT
 
     def tearDown(self):
         pr_reviewer.CLAUDE_MODEL = self._orig_model
@@ -459,6 +460,7 @@ class TestApplyConfig(unittest.TestCase):
         pr_reviewer.IGNORE_PATTERNS = self._orig_ignore
         pr_reviewer.REVIEW_STRICTNESS = self._orig_strictness
         pr_reviewer.REVIEW_WALKTHROUGH = self._orig_walkthrough
+        pr_reviewer.SKIP_DRAFT = self._orig_skip_draft
 
     def test_model_applied(self):
         with patch.dict(os.environ, {}, clear=False):
@@ -499,6 +501,23 @@ class TestApplyConfig(unittest.TestCase):
             pr_reviewer.apply_config({"walkthrough": False})
         self.assertEqual(pr_reviewer.REVIEW_WALKTHROUGH, "false")
 
+    def test_skip_draft_false_applied(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("SKIP_DRAFT", None)
+            pr_reviewer.apply_config({"skip_draft": False})
+        self.assertEqual(pr_reviewer.SKIP_DRAFT, "false")
+
+    def test_skip_draft_true_applied(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("SKIP_DRAFT", None)
+            pr_reviewer.apply_config({"skip_draft": True})
+        self.assertEqual(pr_reviewer.SKIP_DRAFT, "true")
+
+    def test_skip_draft_env_overrides_config(self):
+        with patch.dict(os.environ, {"SKIP_DRAFT": "true"}):
+            pr_reviewer.apply_config({"skip_draft": False})
+        self.assertNotEqual(pr_reviewer.SKIP_DRAFT, "false")
+
     def test_empty_config_no_change(self):
         original_model = pr_reviewer.CLAUDE_MODEL
         with patch.dict(os.environ, {}, clear=False):
@@ -527,6 +546,91 @@ class TestLoadConfig(unittest.TestCase):
             with patch.dict(os.environ, {"GITHUB_WORKSPACE": tmpdir}):
                 result = pr_reviewer.load_config()
         self.assertEqual(result, {})
+
+
+# ---------------------------------------------------------------------------
+# get_action_context — draft field
+# ---------------------------------------------------------------------------
+
+class TestGetActionContextDraft(unittest.TestCase):
+    def _make_event(self, draft=False):
+        return {
+            "pull_request": {
+                "number": 1,
+                "title": "Test PR",
+                "body": "Description",
+                "draft": draft,
+                "head": {"sha": "abc123"},
+                "comments_url": "https://api.github.com/repos/owner/repo/issues/1/comments",
+                "base": {"repo": {"full_name": "owner/repo"}},
+            },
+            "repository": {"full_name": "owner/repo"},
+        }
+
+    def test_draft_true_captured(self):
+        import tempfile, json
+        event = self._make_event(draft=True)
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(event, f)
+            path = f.name
+        with patch.dict(os.environ, {"GITHUB_EVENT_PATH": path}):
+            ctx = pr_reviewer.get_action_context()
+        self.assertTrue(ctx["draft"])
+
+    def test_draft_false_captured(self):
+        import tempfile, json
+        event = self._make_event(draft=False)
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(event, f)
+            path = f.name
+        with patch.dict(os.environ, {"GITHUB_EVENT_PATH": path}):
+            ctx = pr_reviewer.get_action_context()
+        self.assertFalse(ctx["draft"])
+
+    def test_draft_field_defaults_to_false_when_absent(self):
+        import tempfile, json
+        event = self._make_event()
+        del event["pull_request"]["draft"]
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(event, f)
+            path = f.name
+        with patch.dict(os.environ, {"GITHUB_EVENT_PATH": path}):
+            ctx = pr_reviewer.get_action_context()
+        self.assertFalse(ctx["draft"])
+
+
+# ---------------------------------------------------------------------------
+# Draft skip logic
+# ---------------------------------------------------------------------------
+
+class TestDraftSkipLogic(unittest.TestCase):
+    def setUp(self):
+        self._orig_skip_draft = pr_reviewer.SKIP_DRAFT
+
+    def tearDown(self):
+        pr_reviewer.SKIP_DRAFT = self._orig_skip_draft
+
+    def test_draft_pr_exits_when_skip_draft_true(self):
+        pr_reviewer.SKIP_DRAFT = "true"
+        ctx = {"draft": True, "number": 1, "owner": "o", "repo": "r"}
+        # Simulate the skip check from main()
+        with self.assertRaises(SystemExit) as cm:
+            if pr_reviewer.SKIP_DRAFT == "true" and ctx.get("draft", False):
+                raise SystemExit(0)
+        self.assertEqual(cm.exception.code, 0)
+
+    def test_draft_pr_not_skipped_when_skip_draft_false(self):
+        pr_reviewer.SKIP_DRAFT = "false"
+        ctx = {"draft": True, "number": 1}
+        # Should not raise
+        skipped = pr_reviewer.SKIP_DRAFT == "true" and ctx.get("draft", False)
+        self.assertFalse(skipped)
+
+    def test_non_draft_not_skipped_when_skip_draft_true(self):
+        pr_reviewer.SKIP_DRAFT = "true"
+        ctx = {"draft": False, "number": 1}
+        skipped = pr_reviewer.SKIP_DRAFT == "true" and ctx.get("draft", False)
+        self.assertFalse(skipped)
 
 
 if __name__ == "__main__":

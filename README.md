@@ -82,6 +82,8 @@ cause silent failures in production.
 | `max_tokens` | no | `4096` | Max response tokens |
 | `strictness` | no | `balanced` | `lenient` (critical+security only), `balanced` (default), `strict` (adds test coverage, docs, tech debt) |
 | `ignore_patterns` | no | — | Comma-separated globs for files to skip (e.g. `"*.md,*.lock"`) |
+| `skip_draft` | no | `true` | Skip review for draft pull requests. Set to `false` to review drafts. |
+| `walkthrough` | no | `true` | Include a file-by-file Changes Walkthrough table at the top of the review |
 
 ### Config file (optional)
 
@@ -93,6 +95,7 @@ strictness: balanced      # lenient | balanced | strict
 model: claude-sonnet-4-6  # or claude-haiku-4-5-20251001 / claude-opus-4-6
 max_tokens: 4096
 walkthrough: true
+skip_draft: true          # skip review for draft PRs
 ignore_patterns:
   - "*.lock"
   - "dist/**"

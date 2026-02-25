@@ -31,6 +31,14 @@ inputs:
     description: 'Review strictness: lenient (critical+security only), balanced (default), strict (includes test coverage, docs, tech debt)'
     required: false
     default: 'balanced'
+  walkthrough:
+    description: 'Include a file-by-file Changes Walkthrough table at the top of the review (true/false)'
+    required: false
+    default: 'true'
+  skip_draft:
+    description: 'Skip review for draft pull requests (true/false)'
+    required: false
+    default: 'true'
 
 runs:
   using: 'composite'
@@ -46,3 +54,5 @@ runs:
         MAX_TOKENS: ${{ inputs.max_tokens }}
         IGNORE_PATTERNS: ${{ inputs.ignore_patterns }}
         REVIEW_STRICTNESS: ${{ inputs.strictness }}
+        REVIEW_WALKTHROUGH: ${{ inputs.walkthrough }}
+        SKIP_DRAFT: ${{ inputs.skip_draft }}

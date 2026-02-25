@@ -29,6 +29,7 @@ MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "4096"))
 IGNORE_PATTERNS = [p.strip() for p in os.environ.get("IGNORE_PATTERNS", "").split(",") if p.strip()]
 REVIEW_STRICTNESS = os.environ.get("REVIEW_STRICTNESS", "balanced")
 REVIEW_WALKTHROUGH = os.environ.get("REVIEW_WALKTHROUGH", "true")
+SKIP_DRAFT = os.environ.get("SKIP_DRAFT", "true")
 
 CONFIG_FILE = ".pr-reviewer.yml"
 
@@ -93,7 +94,7 @@ def load_config():
 
 def apply_config(config):
     """Apply config file values to globals. Env vars always take precedence."""
-    global CLAUDE_MODEL, MAX_TOKENS, IGNORE_PATTERNS, REVIEW_STRICTNESS, REVIEW_WALKTHROUGH
+    global CLAUDE_MODEL, MAX_TOKENS, IGNORE_PATTERNS, REVIEW_STRICTNESS, REVIEW_WALKTHROUGH, SKIP_DRAFT
     if "model" in config and "CLAUDE_MODEL" not in os.environ:
         CLAUDE_MODEL = str(config["model"])
     if "max_tokens" in config and "MAX_TOKENS" not in os.environ:
@@ -108,6 +109,8 @@ def apply_config(config):
         REVIEW_STRICTNESS = str(config["strictness"])
     if "walkthrough" in config and "REVIEW_WALKTHROUGH" not in os.environ:
         REVIEW_WALKTHROUGH = "true" if config["walkthrough"] else "false"
+    if "skip_draft" in config and "SKIP_DRAFT" not in os.environ:
+        SKIP_DRAFT = "true" if config["skip_draft"] else "false"
 
 
 MODEL_PRICING_PER_MTOK = {
@@ -637,6 +640,7 @@ def get_action_context():
         "title": pr.get("title", ""),
         "body": pr.get("body") or "(no description)",
         "head_sha": pr.get("head", {}).get("sha", ""),
+        "draft": pr.get("draft", False),
         "comments_url": pr.get("comments_url") or f"https://api.github.com/repos/{repo}/issues/{pr['number']}/comments",
     }
 
@@ -708,6 +712,10 @@ def main():
             sys.exit(1)
 
         pr_url = f"https://github.com/{ctx['owner']}/{ctx['repo']}/pull/{ctx['number']}"
+
+        if SKIP_DRAFT == "true" and ctx.get("draft", False):
+            print(f"  PR #{ctx['number']} is a draft — skipping review (set skip_draft: false to review drafts)")
+            sys.exit(0)
 
         if HOSTED_API_KEY:
             print(f"  Using hosted review API for PR #{ctx['number']}...")
