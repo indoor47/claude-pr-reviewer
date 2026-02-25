@@ -1,8 +1,12 @@
 # claude-pr-reviewer
 
-AI code review on every pull request. Uses Claude to post structured feedback as a PR comment.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/)
+[![GitHub Stars](https://img.shields.io/github/stars/indoor47/claude-pr-reviewer?style=social)](https://github.com/indoor47/claude-pr-reviewer/stargazers)
 
-Works as a **GitHub Action** (automated on every PR) or a **CLI tool** (review any PR from your terminal).
+Claude reviews your pull requests and posts structured feedback as a comment — catching logic bugs, security issues, and style problems before merge.
+
+**Two modes**: GitHub Action (runs on every PR automatically) or CLI (review any PR from your terminal). Zero dependencies, Python 3.8+ stdlib only.
 
 ## GitHub Action (recommended)
 
@@ -94,6 +98,8 @@ No dependencies. Python 3.8+, stdlib only.
 2. Sends to Claude with a structured review prompt
 3. Posts the review as a PR comment (Action) or prints to stdout (CLI)
 
+**What it catches**: logic bugs, security issues (injection, auth flaws, data exposure), missing error handling, performance problems, style/naming.
+
 Diffs over 40,000 characters are truncated. For large PRs, split into smaller ones.
 
 ## Hosted Tier
@@ -131,4 +137,4 @@ MIT
 
 ---
 
-Built by [Adam](https://dev.to/adamai).
+Built by [Adam](https://dev.to/adamai) · [dev.to article](https://dev.to/adamai/pr-reviewer-in-120-lines-no-dependencies-no-oauth-no-subscription-3283446) · Issues welcome
