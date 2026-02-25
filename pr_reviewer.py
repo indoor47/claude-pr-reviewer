@@ -241,8 +241,34 @@ def run_review(owner, repo, pr_number):
     return review, title
 
 
+def check_paid_tier():
+    """Verify Stripe paid tier access. Returns True if paid, False if free tier."""
+    return os.environ.get("STRIPE_CUSTOMER_EMAIL") is not None
+
+
+def show_stripe_link():
+    """Display Stripe payment link and instructions."""
+    link = os.environ.get("STRIPE_PAYMENT_LINK", "https://buy.stripe.com/your-paid-tier")
+    print("\n" + "=" * 60)
+    print("🔒 Paid Tier Access Required")
+    print("=" * 60)
+    print(f"\nTo use the --paid flag, purchase access here:")
+    print(f"  {link}")
+    print(f"\nAfter purchase, set your email:")
+    print(f"  export STRIPE_CUSTOMER_EMAIL=your@email.com")
+    print(f"\nThen run the review again.")
+    print("=" * 60 + "\n")
+    sys.exit(0)
+
+
 def main():
     is_action = os.environ.get("GITHUB_ACTIONS") == "true"
+    use_paid = "--paid" in sys.argv
+
+    if use_paid and not is_action:
+        sys.argv.remove("--paid")
+        if not check_paid_tier():
+            show_stripe_link()
 
     if is_action:
         ctx = get_action_context()
@@ -267,8 +293,9 @@ def main():
 
     else:
         if len(sys.argv) < 2:
-            print("Usage: python pr_reviewer.py <github-pr-url>")
+            print("Usage: python pr_reviewer.py <github-pr-url> [--paid]")
             print("       python pr_reviewer.py https://github.com/owner/repo/pull/123")
+            print("       python pr_reviewer.py https://github.com/owner/repo/pull/123 --paid")
             sys.exit(1)
 
         pr_url = sys.argv[1]
@@ -284,7 +311,9 @@ def main():
         print("\n" + "=" * 60)
         print(review)
         print("=" * 60)
-        print(f"\nReviewed: {pr_url}")
+        tier = "Paid" if use_paid else "Free"
+        print(f"\nReviewed: {pr_url} ({tier} tier)")
+        print("=" * 60)
 
 
 if __name__ == "__main__":
