@@ -31,6 +31,16 @@ jobs:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
 
+Optional: tune strictness or model:
+
+```yaml
+      - uses: indoor47/claude-pr-reviewer@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          strictness: lenient    # lenient | balanced (default) | strict
+          model: claude-haiku-4-5-20251001  # cheapest option, ~$0.001/review
+```
+
 That's it. Every PR gets a review comment like this:
 
 ```
@@ -70,6 +80,8 @@ cause silent failures in production.
 | `anthropic_api_key` | yes | — | Your Anthropic API key |
 | `model` | no | `claude-sonnet-4-6` | Claude model (`claude-sonnet-4-6`, `claude-opus-4-6`, `claude-haiku-4-5-20251001`) |
 | `max_tokens` | no | `4096` | Max response tokens |
+| `strictness` | no | `balanced` | `lenient` (critical+security only), `balanced` (default), `strict` (adds test coverage, docs, tech debt) |
+| `ignore_patterns` | no | — | Comma-separated globs for files to skip (e.g. `"*.md,*.lock"`) |
 
 ### Setup
 
@@ -110,12 +122,18 @@ Self-hosted: each review costs roughly $0.003–0.02 with Sonnet (default) or $0
 
 ## vs. Other Tools
 
-| Tool | Model | Setup | Cost/Review | Complexity |
-|------|-------|-------|------------|-----------|
-| **claude-pr-reviewer** | Claude Sonnet | 2 min, 1 secret | $0.003–0.02 | Minimal (zero deps) |
-| Devin/Sweep | Proprietary | OAuth + 3rd party | $0.10+ | High (requires approval) |
-| GitHub Copilot | GPT-4 | GitHub org | $10–39/month | Medium (LLM mode only) |
-| SonarQube | Rules-based | Docker + DB | $50–1000/month | High (on-prem infra) |
+| | **claude-pr-reviewer** | CodeRabbit | GitHub Copilot Review | qodo/pr-agent |
+|--|------------------------|------------|----------------------|---------------|
+| **Model** | Claude (you choose) | Proprietary | GPT-4o | GPT-4 / Claude |
+| **Private repos free** | ✓ | ✗ (paid plan) | ✗ ($19+/mo) | ✓ (self-hosted) |
+| **Setup** | 2 min, 1 secret | GitHub App | Org-level setting | Multiple env vars |
+| **Zero dependencies** | ✓ | Cloud-only | Cloud-only | Python deps |
+| **Strictness control** | ✓ (lenient/balanced/strict) | ✗ | ✗ | Limited |
+| **Cost per review** | ~$0.001–0.05 (shown per run) | Opaque | ~$0.04+ after quota | ~$0.001–0.05 |
+| **Inline comments** | ✓ | ✓ | ✓ | ✓ |
+| **No 3rd-party data sharing** | ✓ (Anthropic API only) | ✗ (CodeRabbit servers) | ✗ (GitHub/OpenAI) | ✓ (self-hosted) |
+
+**Why CodeRabbit users switch**: CodeRabbit is verbose by design — it generates the highest comment volume of any tool, which teams report as noise fatigue. claude-pr-reviewer's `lenient` mode gives you only blocking issues, and `strict` mode adds depth when you need it.
 
 ## Troubleshooting
 

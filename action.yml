@@ -27,6 +27,10 @@ inputs:
     description: 'Comma-separated glob patterns for files to skip (e.g., "*.md,*.lock,package-lock.json")'
     required: false
     default: ''
+  strictness:
+    description: 'Review strictness: lenient (critical+security only), balanced (default), strict (includes test coverage, docs, tech debt)'
+    required: false
+    default: 'balanced'
 
 runs:
   using: 'composite'
@@ -41,3 +45,4 @@ runs:
         CLAUDE_MODEL: ${{ inputs.model }}
         MAX_TOKENS: ${{ inputs.max_tokens }}
         IGNORE_PATTERNS: ${{ inputs.ignore_patterns }}
+        REVIEW_STRICTNESS: ${{ inputs.strictness }}

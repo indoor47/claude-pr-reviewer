@@ -27,6 +27,13 @@ GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
 MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "4096"))
 IGNORE_PATTERNS = [p.strip() for p in os.environ.get("IGNORE_PATTERNS", "").split(",") if p.strip()]
+REVIEW_STRICTNESS = os.environ.get("REVIEW_STRICTNESS", "balanced")
+
+MODEL_PRICING_PER_MTOK = {
+    "claude-opus-4-6": (15.0, 75.0),
+    "claude-sonnet-4-6": (3.0, 15.0),
+    "claude-haiku-4-5-20251001": (0.80, 4.0),
+}
 
 LICENSE_DIR = pathlib.Path.home() / ".claude-pr-reviewer"
 LICENSE_FILE = LICENSE_DIR / "license"
@@ -39,6 +46,32 @@ UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
     re.IGNORECASE,
 )
+
+_STRICTNESS_ADDENDUM = {
+    "lenient": (
+        "IMPORTANT: Focus ONLY on Critical bugs and Security issues. "
+        "For the Major and Minor sections, write 'Skipped (lenient mode).' "
+        "Do not comment on style, naming, or minor improvements."
+    ),
+    "balanced": "",
+    "strict": (
+        "IMPORTANT: Be thorough. Beyond standard review categories, also flag: "
+        "missing test coverage for new public functions, undocumented public APIs, "
+        "performance bottlenecks, and technical debt being introduced."
+    ),
+}
+
+
+def format_cost_estimate(usage, model):
+    """Return a cost estimate string from Anthropic usage data."""
+    input_t = usage.get("input_tokens", 0)
+    output_t = usage.get("output_tokens", 0)
+    if not input_t:
+        return ""
+    prices = MODEL_PRICING_PER_MTOK.get(model, (3.0, 15.0))
+    cost = (input_t * prices[0] + output_t * prices[1]) / 1_000_000
+    return f"  Tokens: {input_t:,} in / {output_t:,} out | Est. cost: ~${cost:.4f}"
+
 
 REVIEW_PROMPT = """You are a senior software engineer doing a thorough code review.
 
@@ -397,7 +430,8 @@ def claude_review(prompt):
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
             data = json.loads(resp.read())
-            return data["content"][0]["text"]
+            usage = data.get("usage", {})
+            return data["content"][0]["text"], usage
     except urllib.error.HTTPError as e:
         body = e.read().decode()
         print(f"Anthropic API error {e.code}: {body}", file=sys.stderr)
@@ -511,9 +545,15 @@ def run_review(owner, repo, pr_number):
     diff = truncate_diff(diff)
 
     prompt = REVIEW_PROMPT.format(title=title, body=body, diff=diff)
+    strictness_note = _STRICTNESS_ADDENDUM.get(REVIEW_STRICTNESS, "")
+    if strictness_note:
+        prompt += f"\n\n{strictness_note}"
 
-    print(f"  Reviewing with {CLAUDE_MODEL}...")
-    review = claude_review(prompt)
+    print(f"  Reviewing with {CLAUDE_MODEL} (strictness: {REVIEW_STRICTNESS})...")
+    review, usage = claude_review(prompt)
+    cost_line = format_cost_estimate(usage, CLAUDE_MODEL)
+    if cost_line:
+        print(cost_line)
     return review, title, diff
 
 
