@@ -98,6 +98,8 @@ No dependencies. Python 3.8+, stdlib only.
 2. Sends to Claude with a structured review prompt
 3. Posts the review as a PR comment (Action) or prints to stdout (CLI)
 
+On subsequent pushes, the Action **updates the existing comment** rather than creating a new one — keeps PR threads clean.
+
 **What it catches**: logic bugs, security issues (injection, auth flaws, data exposure), missing error handling, performance problems, style/naming.
 
 Diffs over 40,000 characters are truncated. For large PRs, split into smaller ones.
