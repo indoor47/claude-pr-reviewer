@@ -16,6 +16,7 @@ import re
 import json
 import urllib.request
 import urllib.error
+import pathlib
 
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
@@ -24,6 +25,17 @@ HOSTED_API_URL = os.environ.get("HOSTED_API_URL", "https://api.memfun.dev")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
 MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "4096"))
+
+LICENSE_DIR = pathlib.Path.home() / ".claude-pr-reviewer"
+LICENSE_FILE = LICENSE_DIR / "license"
+
+STRIPE_URL = "STRIPE_URL_PLACEHOLDER"
+SUPPORT_EMAIL = "adamai@agentmail.to"
+
+UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
 
 REVIEW_PROMPT = """You are a senior software engineer doing a thorough code review.
 
@@ -63,6 +75,101 @@ APPROVE / REQUEST CHANGES / NEEDS DISCUSSION
 One sentence justification.
 """
 
+
+# ---------------------------------------------------------------------------
+# License helpers
+# ---------------------------------------------------------------------------
+
+def _parse_license(raw):
+    """Return (email, uuid) or None if the format is invalid."""
+    raw = raw.strip()
+    parts = raw.split(":", 1)
+    if len(parts) != 2:
+        return None
+    email, uuid = parts[0].strip(), parts[1].strip()
+    # basic email sanity
+    if "@" not in email or "." not in email.split("@")[-1]:
+        return None
+    if not UUID_RE.match(uuid):
+        return None
+    return email, uuid
+
+
+def load_license():
+    """
+    Read ~/.claude-pr-reviewer/license.
+    Returns (email, uuid) on success, None if missing or malformed.
+    """
+    if not LICENSE_FILE.exists():
+        return None
+    try:
+        raw = LICENSE_FILE.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    return _parse_license(raw)
+
+
+def activate_paid_tier():
+    """
+    Called when --paid is supplied via CLI.
+
+    - License found and valid  -> set model to opus, print confirmation, return True
+    - License found but bad    -> print error, exit 1
+    - License missing          -> print payment instructions, exit 0
+    """
+    result = load_license()
+
+    if LICENSE_FILE.exists() and result is None:
+        # File exists but content is malformed
+        print(
+            "Error: license file at ~/.claude-pr-reviewer/license is malformed.\n"
+            "Expected format: your@email.com:550e8400-e29b-41d4-a716-446655440000\n"
+            "Re-purchase or contact " + SUPPORT_EMAIL + " for a replacement key.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if result is None:
+        # No license at all
+        _print_payment_instructions()
+        sys.exit(0)
+
+    email, uuid = result
+    # Activate opus
+    global CLAUDE_MODEL
+    CLAUDE_MODEL = "claude-opus-4-6"
+    print(f"Paid tier active ({email}) — model set to claude-opus-4-6")
+    return True
+
+
+def _print_payment_instructions():
+    sep = "=" * 60
+    print(f"\n{sep}")
+    print("Paid Tier")
+    print(sep)
+    print()
+    print("Unlock the paid tier to use Claude Opus (higher accuracy)")
+    print("and future premium features.")
+    print()
+    print("1. Purchase access:")
+    print(f"   {STRIPE_URL}")
+    print()
+    print("2. Email your receipt to:")
+    print(f"   {SUPPORT_EMAIL}")
+    print("   Subject: PR Reviewer License")
+    print()
+    print("3. You will receive a license key within 24 hours.")
+    print("   Save it to:")
+    print("   ~/.claude-pr-reviewer/license")
+    print()
+    print("   Format:  your@email.com:550e8400-e29b-41d4-a716-446655440000")
+    print()
+    print(f"{sep}\n")
+
+
+# ---------------------------------------------------------------------------
+# GitHub / Anthropic helpers
+# ---------------------------------------------------------------------------
 
 def github_request(url):
     headers = {"Accept": "application/vnd.github.v3+json", "User-Agent": "claude-pr-reviewer"}
@@ -241,34 +348,18 @@ def run_review(owner, repo, pr_number):
     return review, title
 
 
-def check_paid_tier():
-    """Verify Stripe paid tier access. Returns True if paid, False if free tier."""
-    return os.environ.get("STRIPE_CUSTOMER_EMAIL") is not None
-
-
-def show_stripe_link():
-    """Display Stripe payment link and instructions."""
-    link = os.environ.get("STRIPE_PAYMENT_LINK", "https://buy.stripe.com/your-paid-tier")
-    print("\n" + "=" * 60)
-    print("🔒 Paid Tier Access Required")
-    print("=" * 60)
-    print(f"\nTo use the --paid flag, purchase access here:")
-    print(f"  {link}")
-    print(f"\nAfter purchase, set your email:")
-    print(f"  export STRIPE_CUSTOMER_EMAIL=your@email.com")
-    print(f"\nThen run the review again.")
-    print("=" * 60 + "\n")
-    sys.exit(0)
-
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
 
 def main():
     is_action = os.environ.get("GITHUB_ACTIONS") == "true"
     use_paid = "--paid" in sys.argv
 
-    if use_paid and not is_action:
+    if use_paid:
         sys.argv.remove("--paid")
-        if not check_paid_tier():
-            show_stripe_link()
+        if not is_action:
+            activate_paid_tier()   # sets CLAUDE_MODEL to opus or exits
 
     if is_action:
         ctx = get_action_context()
@@ -311,7 +402,7 @@ def main():
         print("\n" + "=" * 60)
         print(review)
         print("=" * 60)
-        tier = "Paid" if use_paid else "Free"
+        tier = "Paid (claude-opus-4-6)" if use_paid else "Free"
         print(f"\nReviewed: {pr_url} ({tier} tier)")
         print("=" * 60)
 
