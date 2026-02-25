@@ -22,7 +22,7 @@ jobs:
   review:
     runs-on: ubuntu-latest
     steps:
-      - uses: indoor47/claude-pr-reviewer@main
+      - uses: indoor47/claude-pr-reviewer@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
