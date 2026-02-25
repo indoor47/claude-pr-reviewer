@@ -58,7 +58,7 @@ One paragraph describing what this PR does.
 ## Issues Found
 
 ### Critical (must fix before merge)
-- List each critical bug, security issue, or correctness problem. Be specific with line references.
+- List each critical bug, security issue, or correctness problem.
 - If none: "None found."
 
 ### Major (should fix)
@@ -76,6 +76,9 @@ If none: "No security concerns identified."
 ## Overall Verdict
 APPROVE / REQUEST CHANGES / NEEDS DISCUSSION
 One sentence justification.
+
+When an issue can be pinpointed to a specific line in the diff, prefix that bullet with FILE:path/to/file LINE:N using the exact file path from the diff header and the line number in the new file. Only use this prefix when you are certain of the exact line. Example:
+- FILE:src/auth.py LINE:23 Missing input validation allows injection.
 """
 
 
@@ -258,6 +261,99 @@ def find_existing_review_comment(comments_url):
         page += 1
 
 
+def parse_diff_for_lines(diff):
+    """Parse unified diff to map file paths to valid new-file line numbers.
+
+    Returns dict: {file_path: set(line_numbers)} for all added/context lines.
+    Only addition lines ('+') are valid targets for inline review comments.
+    """
+    result = {}
+    current_file = None
+    new_line_num = 0
+
+    for line in diff.split('\n'):
+        if line.startswith('+++ b/'):
+            current_file = line[6:].strip()
+            result.setdefault(current_file, set())
+            new_line_num = 0
+        elif line.startswith('+++ /dev/null'):
+            current_file = None
+        elif line.startswith('@@ ') and current_file:
+            m = re.search(r'\+(\d+)(?:,\d+)?', line)
+            if m:
+                new_line_num = int(m.group(1)) - 1
+        elif current_file:
+            if line.startswith('+') and not line.startswith('+++'):
+                new_line_num += 1
+                result[current_file].add(new_line_num)
+            elif not line.startswith('-'):
+                new_line_num += 1
+
+    return result
+
+
+def parse_verdict(review_text):
+    """Extract GitHub PR review event type from the Overall Verdict section."""
+    m = re.search(r'## Overall Verdict\s*\n([^\n]+)', review_text, re.IGNORECASE)
+    if m:
+        verdict = m.group(1).upper()
+        if 'APPROVE' in verdict:
+            return 'APPROVE'
+        if 'REQUEST' in verdict:
+            return 'REQUEST_CHANGES'
+    return 'COMMENT'
+
+
+def parse_inline_comments(review_text, valid_lines):
+    """Extract FILE:path LINE:N prefixed issues from review text.
+
+    Returns (cleaned_text, [{"path": ..., "line": ..., "body": ...}]).
+    Only includes comments whose (path, line) exist in valid_lines.
+    """
+    pattern = re.compile(r'FILE:(\S+)\s+LINE:(\d+)\s+(.+)')
+    comments = []
+    used_positions = set()
+
+    for m in pattern.finditer(review_text):
+        path = m.group(1).rstrip('.,')
+        line = int(m.group(2))
+        body = m.group(3).strip()
+        pos_key = (path, line)
+
+        if path not in valid_lines or line not in valid_lines[path]:
+            continue
+        if pos_key in used_positions:
+            continue
+        if body:
+            comments.append({"path": path, "line": line, "body": body})
+            used_positions.add(pos_key)
+
+    cleaned = re.sub(r'FILE:\S+\s+LINE:\d+\s+', '', review_text)
+    return cleaned, comments
+
+
+def find_existing_pr_review(owner, repo, pr_number):
+    """Find an existing PR review with our marker. Returns review ID or None."""
+    url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}/reviews?per_page=100"
+    try:
+        reviews = github_request(url)
+        for review in reviews:
+            if REVIEW_MARKER in review.get("body", ""):
+                return review["id"]
+    except SystemExit:
+        pass
+    return None
+
+
+def post_pr_review(owner, repo, pr_number, head_sha, body, event, comments):
+    """Submit a formal PR review with optional inline comments."""
+    url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}/reviews"
+    payload = {"commit_id": head_sha, "body": body, "event": event}
+    if comments:
+        payload["comments"] = comments
+    return github_post(url, payload)
+
+
 def hosted_review(pr_url):
     """Call the hosted review API. Returns review text."""
     payload = json.dumps({"pr_url": pr_url, "api_key": HOSTED_API_KEY}).encode()
@@ -391,6 +487,7 @@ def get_action_context():
         "number": pr["number"],
         "title": pr.get("title", ""),
         "body": pr.get("body") or "(no description)",
+        "head_sha": pr.get("head", {}).get("sha", ""),
         "comments_url": pr.get("comments_url") or f"https://api.github.com/repos/{repo}/issues/{pr['number']}/comments",
     }
 
@@ -417,7 +514,7 @@ def run_review(owner, repo, pr_number):
 
     print(f"  Reviewing with {CLAUDE_MODEL}...")
     review = claude_review(prompt)
-    return review, title
+    return review, title, diff
 
 
 # ---------------------------------------------------------------------------
@@ -445,22 +542,37 @@ def main():
             print(f"  Using hosted review API for PR #{ctx['number']}...")
             review = hosted_review(pr_url)
             footer = f"\n\n---\n*Reviewed by [claude-pr-reviewer](https://github.com/indoor47/claude-pr-reviewer) (hosted tier)*"
+            comment_body = f"{REVIEW_MARKER}\n## Claude Code Review\n\n{review}{footer}"
+            existing_id = find_existing_review_comment(ctx["comments_url"])
+            if existing_id:
+                print("  Updating existing review comment...")
+                repo_path = f"{ctx['owner']}/{ctx['repo']}"
+                patch_url = f"https://api.github.com/repos/{repo_path}/issues/comments/{existing_id}"
+                github_patch(patch_url, {"body": comment_body})
+                print(f"  Review updated on PR #{ctx['number']}")
+            else:
+                print("  Posting review comment...")
+                github_post(ctx["comments_url"], {"body": comment_body})
+                print(f"  Review posted on PR #{ctx['number']}")
         else:
-            review, _ = run_review(ctx["owner"], ctx["repo"], ctx["number"])
+            review, _, diff = run_review(ctx["owner"], ctx["repo"], ctx["number"])
             footer = f"\n\n---\n*Reviewed by [claude-pr-reviewer](https://github.com/indoor47/claude-pr-reviewer) using {CLAUDE_MODEL}*"
 
-        comment_body = f"{REVIEW_MARKER}\n## Claude Code Review\n\n{review}{footer}"
-        existing_id = find_existing_review_comment(ctx["comments_url"])
-        if existing_id:
-            print("  Updating existing review comment...")
-            repo = f"{ctx['owner']}/{ctx['repo']}"
-            patch_url = f"https://api.github.com/repos/{repo}/issues/comments/{existing_id}"
-            github_patch(patch_url, {"body": comment_body})
-            print(f"  Review updated on PR #{ctx['number']}")
-        else:
-            print("  Posting review comment...")
-            github_post(ctx["comments_url"], {"body": comment_body})
-            print(f"  Review posted on PR #{ctx['number']}")
+            valid_lines = parse_diff_for_lines(diff)
+            cleaned_review, inline_comments = parse_inline_comments(review, valid_lines)
+            event = parse_verdict(cleaned_review)
+            review_body = f"{REVIEW_MARKER}\n## Claude Code Review\n\n{cleaned_review}{footer}"
+
+            existing_review_id = find_existing_pr_review(ctx["owner"], ctx["repo"], ctx["number"])
+            if existing_review_id:
+                print("  Updating existing PR review...")
+                patch_url = f"https://api.github.com/repos/{ctx['owner']}/{ctx['repo']}/pulls/{ctx['number']}/reviews/{existing_review_id}"
+                github_patch(patch_url, {"body": review_body})
+                print(f"  Review updated on PR #{ctx['number']}")
+            else:
+                print(f"  Posting PR review ({event}) with {len(inline_comments)} inline comment(s)...")
+                post_pr_review(ctx["owner"], ctx["repo"], ctx["number"], ctx["head_sha"], review_body, event, inline_comments)
+                print(f"  Review posted on PR #{ctx['number']}")
 
     else:
         if len(sys.argv) < 2:
@@ -477,7 +589,7 @@ def main():
         else:
             owner, repo, pr_number = parse_pr_url(pr_url)
             print(f"Fetching PR #{pr_number} from {owner}/{repo}...")
-            review, _ = run_review(owner, repo, pr_number)
+            review, _, _ = run_review(owner, repo, pr_number)
 
         print("\n" + "=" * 60)
         print(review)
