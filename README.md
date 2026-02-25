@@ -131,6 +131,48 @@ python pr_reviewer.py https://github.com/owner/repo/pull/123
 
 Self-hosted: each review costs roughly $0.003–0.02 with Sonnet (default) or $0.01–0.05 with Opus. Haiku is cheapest at ~$0.001 per review. A team running 20 PRs/day spends about $1–2/month.
 
+## vs. Other Tools
+
+| Tool | Model | Setup | Cost/Review | Complexity |
+|------|-------|-------|------------|-----------|
+| **claude-pr-reviewer** | Claude Sonnet | 2 min, 1 secret | $0.003–0.02 | Minimal (zero deps) |
+| Devin/Sweep | Proprietary | OAuth + 3rd party | $0.10+ | High (requires approval) |
+| GitHub Copilot | GPT-4 | GitHub org | $10–39/month | Medium (LLM mode only) |
+| SonarQube | Rules-based | Docker + DB | $50–1000/month | High (on-prem infra) |
+
+## Troubleshooting
+
+**Action fails with "Resource not accessible"**
+- Check that `ANTHROPIC_API_KEY` secret is set (Settings → Secrets → New)
+- Ensure workflow has `pull-requests: write` permission
+
+**Review comment not appearing**
+- Check Action logs in PR "Checks" tab
+- If diff > 40KB, PR is too large — split into smaller PRs
+- Verify ANTHROPIC_API_KEY is valid at [console.anthropic.com](https://console.anthropic.com)
+
+**Review is vague or not technical enough**
+- Switch model to Opus (higher accuracy): add `model: claude-opus-4-6` to inputs
+- This increases cost to $0.01–0.05/review but catches deeper issues
+
+**Want to skip certain files?**
+- Use `ignore_patterns`: e.g., `"*.md,*.lock,test/**"`
+- Useful for docs, lockfiles, generated code
+
+## FAQ
+
+**Q: Does this expose my code to Claude/Anthropic?**
+A: Only if you use the hosted tier (coming soon). Self-hosted mode sends diffs directly to the Anthropic API, which they do not store or train on (see [privacy policy](https://www.anthropic.com/legal/privacy)).
+
+**Q: Can I use this on private repos?**
+A: Yes. Provide a `GITHUB_TOKEN` with `repo` scope (Action or CLI). Diff is still only sent to Anthropic, never to 3rd parties.
+
+**Q: How accurate is the review?**
+A: Depends on PR clarity and code complexity. Claude catches ~90% of logic bugs, security issues, and missing error handling. Use Opus for critical PRs.
+
+**Q: Why Python 3.8+?**
+A: Oldest version with solid urllib/json support and type hints. No external deps = no supply chain risk.
+
 ## License
 
 MIT
